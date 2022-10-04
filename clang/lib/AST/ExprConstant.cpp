@@ -2003,6 +2003,8 @@ static bool IsGlobalLValue(APValue::LValueBase B) {
   case Expr::ObjCStringLiteralClass:
   case Expr::ObjCEncodeExprClass:
     return true;
+  case Expr::UnaryMetaobjectOpExprClass:
+    return cast<UnaryMetaobjectOpExpr>(E)->hasStrResult();
   case Expr::ObjCBoxedExprClass:
     return cast<ObjCBoxedExpr>(E)->isExpressibleAsConstantInitializer();
   case Expr::CallExprClass:
@@ -2485,6 +2487,7 @@ static bool HandleConversionToBool(const APValue &Val, bool &Result) {
   switch (Val.getKind()) {
   case APValue::None:
   case APValue::Indeterminate:
+  case APValue::MetaobjectId:
     return false;
   case APValue::Int:
     Result = Val.getInt().getBoolValue();
@@ -6918,6 +6921,8 @@ class APValueToBufferConverter {
           << Ty;
       return false;
     }
+    case APValue::MetaobjectId:
+      return visitMetaobjectId(Val.getMetaobjectId(), Ty, Offset);
 
     case APValue::LValue:
       llvm_unreachable("LValue subobject in bit_cast?");
@@ -7006,6 +7011,16 @@ class APValueToBufferConverter {
     Buffer.writeObject(Offset, Bytes);
     return true;
   }
+
+  bool visitMetaobjectId(const APInt &Val, QualType Ty, CharUnits Offset) {
+    unsigned Width = Val.getBitWidth();
+
+    SmallVector<unsigned char, 8> Bytes(Width / 8);
+    llvm::StoreIntToMemory(Val, &*Bytes.begin(), Width / 8);
+    Buffer.writeObject(Offset, Bytes);
+    return true;
+  }
+
 
   bool visitFloat(const APFloat &Val, QualType Ty, CharUnits Offset) {
     APSInt AsInt(Val.bitcastToAPInt());
@@ -7816,6 +7831,9 @@ public:
   bool VisitCXXNullPtrLiteralExpr(const CXXNullPtrLiteralExpr *E) {
     return DerivedZeroInitialization(E);
   }
+  bool VisitMetaobjectIdExpr(const MetaobjectIdExpr *E) {
+    return DerivedZeroInitialization(E);
+  }
 
   /// A member expression where the object is a prvalue is itself a prvalue.
   bool VisitMemberExpr(const MemberExpr *E) {
@@ -8223,7 +8241,6 @@ bool LValueExprEvaluator::VisitDeclRefExpr(const DeclRefExpr *E) {
     return Visit(BD->getBinding());
   return Error(E);
 }
-
 
 bool LValueExprEvaluator::VisitVarDecl(const Expr *E, const VarDecl *VD) {
 
@@ -8776,6 +8793,8 @@ public:
     Result.setFrom(Info.Ctx, LValResult);
     return true;
   }
+
+  bool VisitUnaryMetaobjectOpExpr(const UnaryMetaobjectOpExpr *E);
 
   bool VisitSYCLUniqueStableNameExpr(const SYCLUniqueStableNameExpr *E) {
     std::string ResultStr = E->ComputeName(Info.Ctx);
@@ -9684,6 +9703,38 @@ bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
 
   return true;
 }
+
+bool PointerExprEvaluator::VisitUnaryMetaobjectOpExpr(
+    const UnaryMetaobjectOpExpr *E) {
+  std::string Value;
+  if (E->hasStrResult()) {
+    if (E->getStrResult(Info.Ctx, &Info, Value)) {
+      QualType CharTyConst = Info.Ctx.CharTy.withConst();
+      QualType StrTy = Info.Ctx.getStringLiteralArrayType(
+          CharTyConst, Value.size());
+      StringLiteral *SL =
+          StringLiteral::Create(Info.Ctx, Value, StringLiteral::UTF8,
+                                false, StrTy, E->getOperatorLoc());
+      evaluateLValue(SL, Result);
+      Result.addArray(Info, E, cast<ConstantArrayType>(StrTy));
+      return true;
+    }
+  }
+  if (E->hasPtrResult()) {
+    if(DeclRefExpr *valDeclRefExpr =
+        E->buildResultDeclRefExpr(Info.Ctx, &Info, VK_LValue)) {
+      QualType valPtrTy = E->getType();
+      assert(valPtrTy->isPointerType());
+
+      UnaryOperator *result =
+        UnaryOperator::Create(Info.Ctx, valDeclRefExpr, UO_AddrOf,
+                              valPtrTy, VK_PRValue, OK_Ordinary,
+                              E->getOperatorLoc(), false, FPOptionsOverride());
+      return VisitUnaryAddrOf(result);
+    }
+  }
+  return false;
+}
 //===----------------------------------------------------------------------===//
 // Member Pointer Evaluation
 //===----------------------------------------------------------------------===//
@@ -9712,6 +9763,7 @@ public:
 
   bool VisitCastExpr(const CastExpr *E);
   bool VisitUnaryAddrOf(const UnaryOperator *E);
+  bool VisitUnaryMetaobjectOpExpr(const UnaryMetaobjectOpExpr *E);
 };
 } // end anonymous namespace
 
@@ -9771,6 +9823,16 @@ bool MemberPointerExprEvaluator::VisitUnaryAddrOf(const UnaryOperator *E) {
   // C++11 [expr.unary.op]p3 has very strict rules on how the address of a
   // member can be formed.
   return Success(cast<DeclRefExpr>(E->getSubExpr())->getDecl());
+}
+
+bool MemberPointerExprEvaluator::VisitUnaryMetaobjectOpExpr(
+    const UnaryMetaobjectOpExpr *E) {
+  if (E->hasPtrResult()) {
+    if (const ValueDecl *valDecl = E->getResultValueDecl(Info.Ctx, &Info)) {
+      return Success(valDecl);
+    }
+  }
+  return false;
 }
 
 //===----------------------------------------------------------------------===//
@@ -10652,6 +10714,7 @@ namespace {
       expandStringLiteral(Info, E, Result, AllocType);
       return true;
     }
+    bool VisitUnaryMetaobjectOpExpr(const UnaryMetaobjectOpExpr *E);
   };
 } // end anonymous namespace
 
@@ -10882,6 +10945,23 @@ bool ArrayExprEvaluator::VisitCXXConstructExpr(const CXXConstructExpr *E,
              .VisitCXXConstructExpr(E, Type);
 }
 
+bool ArrayExprEvaluator::VisitUnaryMetaobjectOpExpr(
+    const UnaryMetaobjectOpExpr *E) {
+  if (E->hasStrResult()) {
+    std::string ResultStr;
+    if (E->getStrResult(Info.Ctx, &Info, ResultStr)) {
+      QualType CharTyConst = Info.Ctx.CharTy.withConst();
+
+      QualType StrTy = Info.Ctx.getStringLiteralArrayType(
+          CharTyConst, ResultStr.size());
+      StringLiteral *SL =
+          StringLiteral::Create(Info.Ctx, ResultStr, StringLiteral::UTF8,
+                                false, StrTy, E->getOperatorLoc());
+      return VisitStringLiteral(SL);
+    }
+  }
+  return false;
+}
 //===----------------------------------------------------------------------===//
 // Integer Evaluation
 //
@@ -10913,13 +10993,18 @@ public:
   }
 
   bool Success(const llvm::APInt &I, const Expr *E, APValue &Result) {
-    assert(E->getType()->isIntegralOrEnumerationType() &&
+    assert((E->getType()->isIntegralOrEnumerationType() ||
+            E->getType()->isMetaobjectIdType()) &&
            "Invalid evaluation result.");
-    assert(I.getBitWidth() == Info.Ctx.getIntWidth(E->getType()) &&
-           "Invalid evaluation result.");
-    Result = APValue(APSInt(I));
-    Result.getInt().setIsUnsigned(
+    if(E->getType()->isIntegralOrEnumerationType()) {
+      assert(I.getBitWidth() == Info.Ctx.getIntWidth(E->getType()) &&
+             "Invalid evaluation result.");
+      Result = APValue(APSInt(I));
+      Result.getInt().setIsUnsigned(
                             E->getType()->isUnsignedIntegerOrEnumerationType());
+    } else {
+      Result = APValue(I);
+    }
     return true;
   }
   bool Success(const llvm::APInt &I, const Expr *E) {
@@ -10945,7 +11030,9 @@ public:
       Result = V;
       return true;
     }
-    return Success(V.getInt(), E);
+    return V.isMetaobjectId()
+      ? Success(V.getMetaobjectId(), E)
+      : Success(V.getInt(), E);
   }
 
   bool ZeroInitialization(const Expr *E) { return Success(0, E); }
@@ -10985,6 +11072,15 @@ public:
 
   bool VisitCastExpr(const CastExpr* E);
   bool VisitUnaryExprOrTypeTraitExpr(const UnaryExprOrTypeTraitExpr *E);
+
+  bool VisitReflexprIdExpr(const ReflexprIdExpr *E) {
+    return Success(E->getIdValue(Info.Ctx), E);
+  }
+  bool VisitMetaobjectIdExpr(const MetaobjectIdExpr *E) {
+    return Success(E->getValue(), E);
+  }
+  bool VisitUnaryMetaobjectOpExpr(const UnaryMetaobjectOpExpr *E);
+  bool VisitNaryMetaobjectOpExpr(const NaryMetaobjectOpExpr *E);
 
   bool VisitCXXBoolLiteralExpr(const CXXBoolLiteralExpr *E) {
     return Success(E->getValue(), E);
@@ -11263,6 +11359,7 @@ EvaluateBuiltinClassifyType(QualType T, const LangOptions &LangOpts) {
     case BuiltinType::SatULongFract:
       return GCCTypeClass::None;
 
+    case BuiltinType::MetaobjectId:
     case BuiltinType::NullPtr:
 
     case BuiltinType::ObjCId:
@@ -11412,6 +11509,7 @@ static bool EvaluateBuiltinConstantP(EvalInfo &Info, const Expr *Arg) {
   // understood.
   if (ArgType->isIntegralOrEnumerationType() || ArgType->isFloatingType() ||
       ArgType->isAnyComplexType() || ArgType->isPointerType() ||
+      ArgType->isMetaobjectIdType() ||
       ArgType->isNullPtrType()) {
     APValue V;
     if (!::EvaluateAsRValue(Info, Arg, V) || Info.EvalStatus.HasSideEffects) {
@@ -13237,6 +13335,42 @@ bool IntExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
   return ExprEvaluatorBaseTy::VisitBinaryOperator(E);
 }
 
+/// VisitUnaryMetaobjectOpExpr - Evaluate a __metaobject_{operation}
+bool IntExprEvaluator::VisitUnaryMetaobjectOpExpr(
+    const UnaryMetaobjectOpExpr *E) {
+
+  if (E->hasIntResult()) {
+    llvm::APSInt result;
+    if (E->getIntResult(Info.Ctx, &Info, result)) {
+      return Success(result, E);
+    }
+  } else if (E->hasObjResult()) {
+    llvm::APInt result;
+    if (E->getObjResult(Info.Ctx, &Info, result)) {
+      return Success(result, E);
+    }
+  }
+  return false;
+}
+
+/// VisitNaryMetaobjectOpExpr - Evaluate a __metaobject_{operation}
+bool IntExprEvaluator::VisitNaryMetaobjectOpExpr(
+    const NaryMetaobjectOpExpr *E) {
+
+  if (E->hasIntResult()) {
+    llvm::APSInt result;
+    if (E->getIntResult(Info.Ctx, &Info, result)) {
+      return Success(result, E);
+    }
+  } else if (E->hasObjResult()) {
+    llvm::APInt result;
+    if (E->getObjResult(Info.Ctx, &Info, result)) {
+      return Success(result, E);
+    }
+  }
+  return false;
+}
+
 /// VisitUnaryExprOrTypeTraitExpr - Evaluate a sizeof, alignof or vec_step with
 /// a result as the expression's type.
 bool IntExprEvaluator::VisitUnaryExprOrTypeTraitExpr(
@@ -14772,6 +14906,9 @@ static bool Evaluate(APValue &Result, EvalInfo &Info, const Expr *E) {
   } else if (T->isIntegralOrEnumerationType()) {
     if (!IntExprEvaluator(Info, Result).Visit(E))
       return false;
+  } else if (T->isMetaobjectIdType()) {
+    if (!IntExprEvaluator(Info, Result).Visit(E))
+      return false;
   } else if (T->hasPointerRepresentation()) {
     LValue LV;
     if (!EvaluatePointer(E, LV, Info))
@@ -15334,7 +15471,8 @@ static ICEDiag CheckEvalInICE(const Expr* E, const ASTContext &Ctx) {
 
 static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
   assert(!E->isValueDependent() && "Should not see value dependent exprs!");
-  if (!E->getType()->isIntegralOrEnumerationType())
+  if (!E->getType()->isIntegralOrEnumerationType() ||
+      !E->getType()->isMetaobjectIdType())
     return ICEDiag(IK_NotICE, E->getBeginLoc());
 
   switch (E->getStmtClass()) {
@@ -15533,6 +15671,20 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
     // compliance: we should warn earlier for offsetof expressions with
     // array subscripts that aren't ICEs, and if the array subscripts
     // are ICEs, the value of the offsetof must be an integer constant.
+    return CheckEvalInICE(E, Ctx);
+  }
+  case Expr::ReflexprIdExprClass: {
+    return CheckEvalInICE(E, Ctx);
+  }
+  case Expr::MetaobjectIdExprClass: {
+    return CheckEvalInICE(E, Ctx);
+  }
+  case Expr::UnaryMetaobjectOpExprClass: {
+    // [reflection-ts] FIXME
+    return CheckEvalInICE(E, Ctx);
+  }
+  case Expr::NaryMetaobjectOpExprClass: {
+    // [reflection-ts] FIXME
     return CheckEvalInICE(E, Ctx);
   }
   case Expr::UnaryExprOrTypeTraitExprClass: {
@@ -15748,6 +15900,60 @@ static bool EvaluateCPlusPlus11IntegralConstantExpr(const ASTContext &Ctx,
 
   if (Value) *Value = Result.getInt();
   return true;
+}
+
+Optional<llvm::APInt> Expr::getMetaobjectIdExpr(void *InfoPtr,
+                                                const ASTContext &Ctx,
+                                                SourceLocation *Loc,
+                                                bool isEvaluated) const {
+  assert(Ctx.getLangOpts().ReflectionTS);
+
+  if (!getType()->isMetaobjectIdType()) {
+    if (Loc) {
+      *Loc = getExprLoc();
+    }
+    return None;
+  }
+
+  if (isValueDependent()) {
+    return None;
+  }
+
+  APValue Result;
+  if (InfoPtr) {
+    FoldConstant FldConst(*static_cast<EvalInfo *>(InfoPtr), true);
+    if (!::EvaluateAsRValue(FldConst.Info, this, Result)) {
+      return None;
+    }
+  } else {
+    assert(Ctx.getLangOpts().ReflectionTS);
+
+    // Build evaluation settings.
+    Expr::EvalStatus Status;
+    SmallVector<PartialDiagnosticAt, 8> Diags;
+    Status.Diag = &Diags;
+    EvalInfo Info(Ctx, Status, EvalInfo::EM_ConstantExpression);
+
+    bool IsConstExpr = ::EvaluateAsRValue(Info, this, Result);
+    assert(!Status.HasSideEffects);
+    assert(Info.discardCleanups());
+
+    if (!Diags.empty()) {
+      IsConstExpr = false;
+      if (Loc) *Loc = Diags[0].first;
+      return None;
+    }
+    assert(IsConstExpr);
+  }
+
+  if (!Result.isMetaobjectId()) {
+    if (Loc) {
+      *Loc = getExprLoc();
+    }
+    return None;
+  }
+
+  return Result.getMetaobjectId();
 }
 
 bool Expr::isIntegerConstantExpr(const ASTContext &Ctx,

@@ -991,6 +991,7 @@ public:
     case TemplateArgument::Declaration:
       break; // FIXME: can this actually happen in TemplateArgumentLoc?
     case TemplateArgument::Integral:
+    case TemplateArgument::MetaobjectId:
     case TemplateArgument::Null:
     case TemplateArgument::NullPtr:
       break; // no references.

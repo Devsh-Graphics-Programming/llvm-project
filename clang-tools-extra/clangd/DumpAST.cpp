@@ -137,6 +137,7 @@ class DumpVisitor : public RecursiveASTVisitor<DumpVisitor> {
       TEMPLATE_ARGUMENT_KIND(NullPtr);
       TEMPLATE_ARGUMENT_KIND(Expression);
       TEMPLATE_ARGUMENT_KIND(Integral);
+      TEMPLATE_ARGUMENT_KIND(MetaobjectId);
       TEMPLATE_ARGUMENT_KIND(Pack);
       TEMPLATE_ARGUMENT_KIND(Type);
       TEMPLATE_ARGUMENT_KIND(Declaration);

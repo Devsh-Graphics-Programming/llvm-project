@@ -981,6 +981,13 @@ public:
   /// Subclasses may override this routine to provide different behavior.
   QualType RebuildDecltypeType(Expr *Underlying, SourceLocation Loc);
 
+  /// Build a new ReflectionTS unrefltype type.
+  ///
+  /// By default, performs semantic analysis when building the unrefltype type.
+  /// Subclasses may override this routine to provide different behavior.
+  QualType RebuildUnrefltypeType(Expr *Underlying, SourceLocation Loc);
+
+
   /// Build a new C++11 auto type.
   ///
   /// By default, builds a new AutoType with the given deduced type.
@@ -2554,6 +2561,53 @@ public:
                                           RParenLoc);
   }
 
+  /// Build a new reflexpr expression with a type argument.
+  ///
+  /// By default, performs semantic analysis to build the new expression.
+  /// Subclasses may override this routine to provide different behavior.
+  ExprResult RebuildReflexprId(TypeSourceInfo *TInfo,
+                               SourceLocation OpLoc,
+                               SourceLocation RParenLoc) {
+    return getSema().GetReflexprTypeExpr(TInfo, false, OpLoc, RParenLoc);
+  }
+
+  /// Build a new reflexpr expression with an expression argument.
+  ///
+  /// By default, performs semantic analysis to build the new expression.
+  /// Subclasses may override this routine to provide different behavior.
+  ExprResult RebuildReflexprId(Expr *E,
+                               SourceLocation OpLoc,
+                               SourceLocation RParenLoc) {
+    return getSema().GetReflexprExprExpr(E, false, OpLoc, RParenLoc);
+  }
+
+  ExprResult RebuildUnaryMetaobjectOp(UnaryMetaobjectOp Oper,
+                                      MetaobjectOpResult OpRes,
+                                      ExprResult argExpr,
+                                      bool applicabilityOnly,
+                                      SourceLocation opLoc,
+                                      SourceLocation rpLoc) {
+    return getSema().CreateUnaryMetaobjectOpExpr(Oper, OpRes, argExpr,
+                                                 applicabilityOnly,
+                                                 opLoc, rpLoc);
+  }
+
+  /// Build a new multi-argument operator expression.
+  ///
+  /// By default, performs semantic analysis to build the new expression.
+  /// Subclasses may override this routine to provide different behavior.
+  ExprResult RebuildNaryMetaobjectOpExpr(NaryMetaobjectOp Oper,
+                                         MetaobjectOpResult OpRes,
+                                         unsigned arity, ExprResult* argExpr,
+                                         bool applicabilityOnly,
+                                         SourceLocation opLoc,
+                                         SourceLocation rpLoc) {
+    return getSema().CreateNaryMetaobjectOpExpr(Oper, OpRes,
+                                                arity, argExpr,
+                                                applicabilityOnly,
+                                                opLoc, rpLoc);
+  }
+
   /// Build a new sizeof, alignof or vec_step expression with a
   /// type argument.
   ///
@@ -3728,6 +3782,7 @@ public:
 
     case TemplateArgument::Null:
     case TemplateArgument::Integral:
+    case TemplateArgument::MetaobjectId:
     case TemplateArgument::Declaration:
     case TemplateArgument::Pack:
     case TemplateArgument::TemplateExpansion:
@@ -4399,6 +4454,7 @@ bool TreeTransform<Derived>::TransformTemplateArgument(
     llvm_unreachable("Unexpected TemplateArgument");
 
   case TemplateArgument::Integral:
+  case TemplateArgument::MetaobjectId:
   case TemplateArgument::NullPtr:
   case TemplateArgument::Declaration: {
     // Transform a resolved template argument straight to a resolved template
@@ -4423,6 +4479,10 @@ bool TreeTransform<Derived>::TransformTemplateArgument(
     else if (Arg.getKind() == TemplateArgument::Integral)
       Output = TemplateArgumentLoc(
           TemplateArgument(getSema().Context, Arg.getAsIntegral(), NewT),
+          TemplateArgumentLocInfo());
+    else if (Arg.getKind() == TemplateArgument::MetaobjectId)
+      Output = TemplateArgumentLoc(
+          TemplateArgument(getSema().Context, Arg.getAsMetaobjectId(), NewT),
           TemplateArgumentLocInfo());
     else if (Arg.getKind() == TemplateArgument::NullPtr)
       Output = TemplateArgumentLoc(TemplateArgument(NewT, /*IsNullPtr=*/true),
@@ -6273,6 +6333,38 @@ QualType TreeTransform<Derived>::TransformDecltypeType(TypeLocBuilder &TLB,
   DecltypeTypeLoc NewTL = TLB.push<DecltypeTypeLoc>(Result);
   NewTL.setDecltypeLoc(TL.getDecltypeLoc());
   NewTL.setRParenLoc(TL.getRParenLoc());
+  return Result;
+}
+
+template<typename Derived>
+QualType TreeTransform<Derived>::TransformUnrefltypeType(TypeLocBuilder &TLB,
+                                                         UnrefltypeTypeLoc TL) {
+  const UnrefltypeType *T = TL.getTypePtr();
+
+  EnterExpressionEvaluationContext Unevaluated(
+      SemaRef, Sema::ExpressionEvaluationContext::ConstantEvaluated, nullptr,
+      Sema::ExpressionEvaluationContextRecord::EK_Unrefltype);
+
+  ExprResult E = getDerived().TransformExpr(T->getUnderlyingExpr());
+  if (E.isInvalid())
+    return QualType();
+
+  E = getSema().ActOnUnrefltypeExpression(E.get(), TL.getNameLoc());
+  if (E.isInvalid())
+    return QualType();
+
+  QualType Result = TL.getType();
+  if (getDerived().AlwaysRebuild() ||
+      E.get() != T->getUnderlyingExpr()) {
+    Result = getDerived().RebuildUnrefltypeType(E.get(), TL.getNameLoc());
+    if (Result.isNull())
+      return QualType();
+  }
+  else E.get();
+
+  UnrefltypeTypeLoc NewTL = TLB.push<UnrefltypeTypeLoc>(Result);
+  NewTL.setNameLoc(TL.getNameLoc());
+
   return Result;
 }
 
@@ -10823,6 +10915,96 @@ TreeTransform<Derived>::TransformPseudoObjectExpr(PseudoObjectExpr *E) {
   return result;
 }
 
+// [reflection-ts]
+template<typename Derived>
+ExprResult
+TreeTransform<Derived>::TransformReflexprIdExpr(ReflexprIdExpr *E) {
+  if (E->isArgumentType()) {
+    TypeSourceInfo *OldT =
+      const_cast<TypeSourceInfo*>(E->getArgumentTypeInfo());
+
+    TypeSourceInfo *NewT = getDerived().TransformType(OldT);
+    if (!NewT)
+      return ExprError();
+
+    if (!getDerived().AlwaysRebuild() && OldT == NewT)
+      return E;
+
+    return getDerived().RebuildReflexprId(NewT,
+                                          E->getOperatorLoc(),
+                                          E->getRParenLoc());
+  } else if(E->isArgumentExpression()) {
+    Expr* ArgExpr = E->getArgumentExpression();
+    ExprResult NewExpr = getDerived().TransformExpr(ArgExpr);
+    bool doRebuild = getDerived().AlwaysRebuild() || (ArgExpr != NewExpr.get());
+
+    if(!doRebuild)
+      return E;
+
+    return getDerived().RebuildReflexprId(NewExpr.get(),
+                                          E->getOperatorLoc(),
+                                          E->getRParenLoc());
+  }
+
+  assert(!E->isTypeDependent());
+  return E;
+}
+
+template<typename Derived>
+ExprResult
+TreeTransform<Derived>::TransformMetaobjectIdExpr(MetaobjectIdExpr *E) {
+  return E;
+}
+
+template<typename Derived>
+ExprResult
+TreeTransform<Derived>::TransformUnaryMetaobjectOpExpr(UnaryMetaobjectOpExpr *E) {
+  Expr* ArgExpr = E->getArgumentExpr();
+  ExprResult NewExpr = getDerived().TransformExpr(ArgExpr);
+  bool doRebuild = getDerived().AlwaysRebuild() || (ArgExpr != NewExpr.get());
+
+  if(!doRebuild)
+    return E;
+
+  return getDerived().RebuildUnaryMetaobjectOp(E->getKind(),
+                                               E->getResultKind(),
+                                               NewExpr,
+                                               E->isApplicabilityOnly(),
+                                               E->getOperatorLoc(),
+                                               E->getRParenLoc());
+}
+
+template<typename Derived>
+ExprResult
+TreeTransform<Derived>::TransformNaryMetaobjectOpExpr(NaryMetaobjectOpExpr *E) {
+
+  unsigned Arity = E->getArity();
+  ExprResult ArgExpr[NaryMetaobjectOpExpr::MaxArity];
+
+  bool doRebuild = getDerived().AlwaysRebuild();
+
+  for(unsigned i=0; i<Arity; ++i) {
+
+    Expr* AE = E->getArgumentExpr(i);
+    ArgExpr[i] = getDerived().TransformExpr(AE);
+
+    if (AE != ArgExpr[i].get()) {
+      AE = ArgExpr[i].get();
+      doRebuild = true;
+    }
+  }
+
+  if(!doRebuild)
+    return E;
+
+  return getDerived().RebuildNaryMetaobjectOpExpr(E->getKind(),
+                                                  E->getResultKind(),
+                                                  Arity, ArgExpr,
+                                                  E->isApplicabilityOnly(),
+                                                  E->getOperatorLoc(),
+                                                  E->getRParenLoc());
+}
+
 template<typename Derived>
 ExprResult
 TreeTransform<Derived>::TransformUnaryExprOrTypeTraitExpr(
@@ -14746,6 +14928,12 @@ QualType TreeTransform<Derived>::RebuildTypeOfType(QualType Underlying) {
 template <typename Derived>
 QualType TreeTransform<Derived>::RebuildDecltypeType(Expr *E, SourceLocation) {
   return SemaRef.BuildDecltypeType(E);
+}
+
+template<typename Derived>
+QualType TreeTransform<Derived>::RebuildUnrefltypeType(Expr *E,
+                                                       SourceLocation Loc) {
+  return SemaRef.BuildUnrefltypeType(E, Loc);
 }
 
 template<typename Derived>

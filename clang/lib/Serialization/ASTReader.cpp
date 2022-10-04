@@ -6704,7 +6704,9 @@ void TypeLocReader::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
   TL.setDecltypeLoc(readSourceLocation());
   TL.setRParenLoc(readSourceLocation());
 }
-
+void TypeLocReader::VisitUnrefltypeTypeLoc(UnrefltypeTypeLoc TL) {
+  TL.setNameLoc(readSourceLocation());
+}
 void TypeLocReader::VisitUnaryTransformTypeLoc(UnaryTransformTypeLoc TL) {
   TL.setKWLoc(readSourceLocation());
   TL.setLParenLoc(readSourceLocation());
@@ -7206,6 +7208,7 @@ ASTRecordReader::readTemplateArgumentLocInfo(TemplateArgument::ArgKind Kind) {
   }
   case TemplateArgument::Null:
   case TemplateArgument::Integral:
+  case TemplateArgument::MetaobjectId:
   case TemplateArgument::Declaration:
   case TemplateArgument::NullPtr:
   case TemplateArgument::Pack:
@@ -7474,6 +7477,9 @@ static Decl *getPredefinedDecl(ASTContext &Context, PredefinedDeclIDs ID) {
 
   case PREDEF_DECL_CF_CONSTANT_STRING_TAG_ID:
     return Context.getCFConstantStringTagDecl();
+
+  case PREDEF_DECL_UNPACK_METAOBJECT_SEQ_ID:
+    return Context.getUnpackMetaobjectSeqDecl();
 
   case PREDEF_DECL_TYPE_PACK_ELEMENT_ID:
     return Context.getTypePackElementDecl();

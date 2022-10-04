@@ -136,6 +136,20 @@ static void printIntegral(const TemplateArgument &TemplArg, raw_ostream &Out,
     Out << Val;
 }
 
+static void printMetaobjectId(const TemplateArgument &TemplArg, raw_ostream &Out,
+                              const PrintingPolicy &Policy, bool IncludeType) {
+  const llvm::APInt &Val = TemplArg.getAsMetaobjectId();
+
+  if (Policy.MSVCFormatting)
+    IncludeType = false;
+
+  if (IncludeType) {
+    Out << "(__metaobject_id)";
+  }
+  Out << Val;
+}
+
+
 static unsigned getArrayDepth(QualType type) {
   unsigned count = 0;
   while (const auto *arrayType = type->getAsArrayTypeUnsafe()) {
@@ -166,6 +180,25 @@ TemplateArgument::TemplateArgument(ASTContext &Ctx, const llvm::APSInt &Value,
   // Copy the APSInt value into our decomposed form.
   Integer.BitWidth = Value.getBitWidth();
   Integer.IsUnsigned = Value.isUnsigned();
+  // If the value is large, we have to get additional memory from the ASTContext
+  unsigned NumWords = Value.getNumWords();
+  if (NumWords > 1) {
+    void *Mem = Ctx.Allocate(NumWords * sizeof(uint64_t));
+    std::memcpy(Mem, Value.getRawData(), NumWords * sizeof(uint64_t));
+    Integer.pVal = static_cast<uint64_t *>(Mem);
+  } else {
+    Integer.VAL = Value.getZExtValue();
+  }
+
+  Integer.Type = Type.getAsOpaquePtr();
+}
+
+TemplateArgument::TemplateArgument(ASTContext &Ctx, const llvm::APInt &Value,
+                                   QualType Type) {
+  Integer.Kind = MetaobjectId;
+  // Copy the APSInt value into our decomposed form.
+  Integer.BitWidth = Value.getBitWidth();
+  Integer.IsUnsigned = true;
   // If the value is large, we have to get additional memory from the ASTContext
   unsigned NumWords = Value.getNumWords();
   if (NumWords > 1) {
@@ -219,6 +252,7 @@ TemplateArgumentDependence TemplateArgument::getDependence() const {
 
   case NullPtr:
   case Integral:
+  case MetaobjectId:
     return TemplateArgumentDependence::None;
 
   case Expression:
@@ -249,6 +283,7 @@ bool TemplateArgument::isPackExpansion() const {
   case Null:
   case Declaration:
   case Integral:
+  case MetaobjectId:
   case Pack:
   case Template:
   case NullPtr:
@@ -290,6 +325,9 @@ QualType TemplateArgument::getNonTypeTemplateArgumentType() const {
 
   case TemplateArgument::Integral:
     return getIntegralType();
+
+  case TemplateArgument::MetaobjectId:
+    return getMetaobjectIdType();
 
   case TemplateArgument::Expression:
     return getAsExpr()->getType();
@@ -347,6 +385,11 @@ void TemplateArgument::Profile(llvm::FoldingSetNodeID &ID,
     getIntegralType().Profile(ID);
     break;
 
+  case MetaobjectId:
+    getAsMetaobjectId().Profile(ID);
+    getMetaobjectIdType().Profile(ID);
+    break;
+
   case Expression:
     getAsExpr()->Profile(ID, Context, true);
     break;
@@ -380,6 +423,9 @@ bool TemplateArgument::structurallyEquals(const TemplateArgument &Other) const {
     return getIntegralType() == Other.getIntegralType() &&
            getAsIntegral() == Other.getAsIntegral();
 
+  case MetaobjectId:
+    return getAsMetaobjectId() == Other.getAsMetaobjectId();
+
   case Pack:
     if (Args.NumArgs != Other.Args.NumArgs) return false;
     for (unsigned I = 0, E = Args.NumArgs; I != E; ++I)
@@ -406,6 +452,7 @@ TemplateArgument TemplateArgument::getPackExpansionPattern() const {
 
   case Declaration:
   case Integral:
+  case MetaobjectId:
   case Pack:
   case Null:
   case Template:
@@ -464,6 +511,10 @@ void TemplateArgument::print(const PrintingPolicy &Policy, raw_ostream &Out,
 
   case Integral:
     printIntegral(*this, Out, Policy, IncludeType);
+    break;
+
+  case MetaobjectId:
+    printMetaobjectId(*this, Out, Policy, IncludeType);
     break;
 
   case Expression:
@@ -531,6 +582,9 @@ SourceRange TemplateArgumentLoc::getSourceRange() const {
   case TemplateArgument::Integral:
     return getSourceIntegralExpression()->getSourceRange();
 
+  case TemplateArgument::MetaobjectId:
+    return getSourceMetaobjectIdExpression()->getSourceRange();
+
   case TemplateArgument::Pack:
   case TemplateArgument::Null:
     return SourceRange();
@@ -558,6 +612,9 @@ static const T &DiagTemplateArg(const T &DB, const TemplateArgument &Arg) {
 
   case TemplateArgument::Integral:
     return DB << toString(Arg.getAsIntegral(), 10);
+
+  case TemplateArgument::MetaobjectId:
+    return DB << toString(llvm::APSInt(Arg.getAsMetaobjectId()), 10);
 
   case TemplateArgument::Template:
     return DB << Arg.getAsTemplate();

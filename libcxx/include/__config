@@ -1121,6 +1121,14 @@ _LIBCPP_BEGIN_NAMESPACE_STD _LIBCPP_END_NAMESPACE_STD
 #    define _LIBCPP_HAS_NO_CXX20_COROUTINES
 #  endif
 
+#if !defined(__cpp_reflection) || __cpp_reflection < 201902L
+#define _LIBCPP_HAS_NO_REFLECTION
+#else
+#if !defined(__cpp_reflection_ext) || __cpp_reflection_ext < 202111L
+#define _LIBCPP_HAS_NO_REFLECTION_EXT
+#endif
+#endif
+
 #  define _LIBCPP_PUSH_MACROS _Pragma("push_macro(\"min\")") _Pragma("push_macro(\"max\")")
 #  define _LIBCPP_POP_MACROS _Pragma("pop_macro(\"min\")") _Pragma("pop_macro(\"max\")")
 

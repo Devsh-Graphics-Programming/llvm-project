@@ -439,6 +439,32 @@ protected:
     SourceLocation Loc;
   };
 
+  class ReflexprIdExprBitfields {
+    friend class ReflexprIdExpr;
+    unsigned : NumExprBits;
+    unsigned Kind : 6;
+    unsigned SeqKind : 4;
+    unsigned ArgKind : 3;
+    unsigned Accessibility : 2;
+    unsigned RemoveSugar : 1;
+  };
+
+  class UnaryMetaobjectOpExprBitfields {
+    friend class UnaryMetaobjectOpExpr;
+    unsigned : NumExprBits;
+    unsigned Kind : 7;
+    unsigned ResKind : 3;
+    unsigned ApplicabilityOnly : 1;
+  };
+
+  class NaryMetaobjectOpExprBitfields {
+    friend class NaryMetaobjectOpExpr;
+    unsigned : NumExprBits;
+    unsigned Kind : 1;
+    unsigned ResKind : 3;
+    unsigned ApplicabilityOnly : 1;
+  };
+
   class UnaryExprOrTypeTraitExprBitfields {
     friend class UnaryExprOrTypeTraitExpr;
 
@@ -1029,6 +1055,9 @@ protected:
     StringLiteralBitfields StringLiteralBits;
     CharacterLiteralBitfields CharacterLiteralBits;
     UnaryOperatorBitfields UnaryOperatorBits;
+    ReflexprIdExprBitfields ReflexprIdExprBits;
+    UnaryMetaobjectOpExprBitfields UnaryMetaobjectOpExprBits;
+    NaryMetaobjectOpExprBitfields NaryMetaobjectOpExprBits;
     UnaryExprOrTypeTraitExprBitfields UnaryExprOrTypeTraitExprBits;
     ArrayOrMatrixSubscriptExprBitfields ArrayOrMatrixSubscriptExprBits;
     CallExprBitfields CallExprBits;

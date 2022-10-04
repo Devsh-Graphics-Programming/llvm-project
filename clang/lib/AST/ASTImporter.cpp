@@ -396,6 +396,7 @@ namespace clang {
     ExpectedType VisitTypeOfType(const TypeOfType *T);
     ExpectedType VisitUsingType(const UsingType *T);
     ExpectedType VisitDecltypeType(const DecltypeType *T);
+    ExpectedType VisitUnrefltypeType(const UnrefltypeType *T);
     ExpectedType VisitUnaryTransformType(const UnaryTransformType *T);
     ExpectedType VisitAutoType(const AutoType *T);
     ExpectedType VisitDeducedTemplateSpecializationType(
@@ -844,6 +845,13 @@ ASTNodeImporter::import(const TemplateArgument &From) {
   }
 
   case TemplateArgument::Integral: {
+    ExpectedType ToTypeOrErr = import(From.getIntegralType());
+    if (!ToTypeOrErr)
+      return ToTypeOrErr.takeError();
+    return TemplateArgument(From, *ToTypeOrErr);
+  }
+
+  case TemplateArgument::MetaobjectId: {
     ExpectedType ToTypeOrErr = import(From.getIntegralType());
     if (!ToTypeOrErr)
       return ToTypeOrErr.takeError();
@@ -1404,6 +1412,20 @@ ExpectedType ASTNodeImporter::VisitDecltypeType(const DecltypeType *T) {
     return ToUnderlyingTypeOrErr.takeError();
 
   return Importer.getToContext().getDecltypeType(
+      *ToExprOrErr, *ToUnderlyingTypeOrErr);
+}
+
+ExpectedType ASTNodeImporter::VisitUnrefltypeType(const UnrefltypeType *T) {
+  // [reflection-ts] FIXME: Make sure that the "to" context supports C++2x!
+  ExpectedExpr ToExprOrErr = import(T->getUnderlyingExpr());
+  if (!ToExprOrErr)
+    return ToExprOrErr.takeError();
+
+  ExpectedType ToUnderlyingTypeOrErr = import(T->getUnderlyingType());
+  if (!ToUnderlyingTypeOrErr)
+    return ToUnderlyingTypeOrErr.takeError();
+
+  return Importer.getToContext().getUnrefltypeType(
       *ToExprOrErr, *ToUnderlyingTypeOrErr);
 }
 
@@ -4981,6 +5003,9 @@ ExpectedDecl ASTNodeImporter::VisitBuiltinTemplateDecl(BuiltinTemplateDecl *D) {
   switch (D->getBuiltinTemplateKind()) {
   case BuiltinTemplateKind::BTK__make_integer_seq:
     ToD = Importer.getToContext().getMakeIntegerSeqDecl();
+    break;
+  case BuiltinTemplateKind::BTK__unpack_metaobject_seq:
+    ToD = Importer.getToContext().getUnpackMetaobjectSeqDecl();
     break;
   case BuiltinTemplateKind::BTK__type_pack_element:
     ToD = Importer.getToContext().getTypePackElementDecl();
@@ -9669,6 +9694,7 @@ ASTNodeImporter::ImportAPValue(const APValue &FromValue) {
   case APValue::FixedPoint:
   case APValue::ComplexInt:
   case APValue::ComplexFloat:
+  case APValue::MetaobjectId:
     Result = FromValue;
     break;
   case APValue::Vector: {

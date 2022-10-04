@@ -868,6 +868,7 @@ bool Sema::containsUnexpandedParameterPacks(Declarator &D) {
 
   case TST_typeofExpr:
   case TST_decltype:
+  case TST_unrefltype:
   case TST_bitint:
     if (DS.getRepAsExpr() &&
         DS.getRepAsExpr()->containsUnexpandedParameterPack())
@@ -891,6 +892,7 @@ bool Sema::containsUnexpandedParameterPacks(Declarator &D) {
   case TST_Float16:
   case TST_float128:
   case TST_ibm128:
+  case TST_metaobjectId:
   case TST_bool:
   case TST_decimal32:
   case TST_decimal64:
@@ -1101,6 +1103,7 @@ Sema::getTemplateArgumentPackExpansionPattern(
   case TemplateArgument::NullPtr:
   case TemplateArgument::Template:
   case TemplateArgument::Integral:
+  case TemplateArgument::MetaobjectId:
   case TemplateArgument::Pack:
   case TemplateArgument::Null:
     return TemplateArgumentLoc();
@@ -1151,6 +1154,7 @@ Optional<unsigned> Sema::getFullyPackExpandedSize(TemplateArgument Arg) {
   case TemplateArgument::NullPtr:
   case TemplateArgument::TemplateExpansion:
   case TemplateArgument::Integral:
+  case TemplateArgument::MetaobjectId:
   case TemplateArgument::Pack:
   case TemplateArgument::Null:
     return None;

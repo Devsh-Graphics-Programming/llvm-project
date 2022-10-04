@@ -1575,6 +1575,11 @@ ExprResult TemplateInstantiator::transformNonTypeTemplateParmRef(
     assert(!paramType->isDependentType() && "param type still dependent");
     result = SemaRef.BuildExpressionFromDeclTemplateArgument(arg, paramType, loc);
     refParam = paramType->isReferenceType();
+  } else if (arg.getKind() == TemplateArgument::MetaobjectId) {
+    result = SemaRef.BuildExpressionFromMetaobjectIdTemplateArgument(arg, loc);
+    assert(result.isInvalid() ||
+           SemaRef.Context.hasSameType(result.get()->getType(),
+                                       arg.getMetaobjectIdType()));
   } else {
     result = SemaRef.BuildExpressionFromIntegralTemplateArgument(arg, loc);
     assert(result.isInvalid() ||

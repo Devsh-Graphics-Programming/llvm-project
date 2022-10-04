@@ -819,6 +819,7 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
   case BuiltinType::ULong:
   case BuiltinType::WChar_U:
   case BuiltinType::ULongLong:
+  case BuiltinType::MetaobjectId:
     Encoding = llvm::dwarf::DW_ATE_unsigned;
     break;
   case BuiltinType::Short:
@@ -2021,6 +2022,17 @@ CGDebugInfo::CollectTemplateParams(Optional<TemplateArgs> OArgs,
       TemplateParams.push_back(DBuilder.createTemplateValueParameter(
           TheCU, Name, TTy, defaultParameter,
           llvm::ConstantInt::get(CGM.getLLVMContext(), TA.getAsIntegral())));
+    } break;
+    case TemplateArgument::MetaobjectId: {
+      llvm::DIType *TTy = getOrCreateType(TA.getMetaobjectIdType(), Unit);
+      if (Args.TList && CGM.getCodeGenOpts().DwarfVersion >= 5)
+        if (auto *templateType = dyn_cast_or_null<NonTypeTemplateParmDecl>(
+                Args.TList->getParam(i)))
+          assert(!templateType->hasDefaultArgument());
+
+      TemplateParams.push_back(DBuilder.createTemplateValueParameter(
+          TheCU, Name, TTy, defaultParameter,
+          llvm::ConstantInt::get(CGM.getLLVMContext(), TA.getAsMetaobjectId())));
     } break;
     case TemplateArgument::Declaration: {
       const ValueDecl *D = TA.getAsDecl();
@@ -3290,6 +3302,9 @@ static QualType UnwrapTypeForDebugInfo(QualType T, const ASTContext &C) {
     case Type::Decltype:
       T = cast<DecltypeType>(T)->getUnderlyingType();
       break;
+    case Type::Unrefltype:
+      T = cast<UnrefltypeType>(T)->getUnderlyingType();
+      break;
     case Type::UnaryTransform:
       T = cast<UnaryTransformType>(T)->getUnderlyingType();
       break;
@@ -3503,6 +3518,7 @@ llvm::DIType *CGDebugInfo::CreateTypeNode(QualType Ty, llvm::DIFile *Unit) {
   case Type::TypeOfExpr:
   case Type::TypeOf:
   case Type::Decltype:
+  case Type::Unrefltype:
   case Type::UnaryTransform:
     break;
   }
@@ -5186,6 +5202,12 @@ std::string CGDebugInfo::GetName(const Decl *D, bool Qualified) const {
             // feasible some day.
             return TA.getAsIntegral().getBitWidth() <= 64 &&
                    IsReconstitutableType(TA.getIntegralType());
+          case TemplateArgument::MetaobjectId:
+            // Larger integers get encoded as DWARF blocks which are a bit
+            // harder to parse back into a large integer, etc - so punting on
+            // this for now. Re-parsing the integers back into APInt is probably
+            // feasible some day.
+            return TA.getAsMetaobjectId().getBitWidth() <= 64;
           case TemplateArgument::Type:
             return IsReconstitutableType(TA.getAsType());
           default:

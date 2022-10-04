@@ -913,6 +913,9 @@ bool Sema::LookupBuiltin(LookupResult &R) {
         if (II == getASTContext().getMakeIntegerSeqName()) {
           R.addDecl(getASTContext().getMakeIntegerSeqDecl());
           return true;
+        } else if (II == getASTContext().getUnpackMetaobjectSeqName()) {
+          R.addDecl(getASTContext().getUnpackMetaobjectSeqDecl());
+          return true;
         } else if (II == getASTContext().getTypePackElementName()) {
           R.addDecl(getASTContext().getTypePackElementDecl());
           return true;
@@ -2955,6 +2958,7 @@ addAssociatedClassesAndNamespaces(AssociatedLookup &Result,
 
     case TemplateArgument::Declaration:
     case TemplateArgument::Integral:
+    case TemplateArgument::MetaobjectId:
     case TemplateArgument::Expression:
     case TemplateArgument::NullPtr:
       // [Note: non-type template arguments do not contribute to the set of
@@ -3252,6 +3256,13 @@ void Sema::FindAssociatedClassesAndNamespaces(
   for (unsigned ArgIdx = 0; ArgIdx != Args.size(); ++ArgIdx) {
     Expr *Arg = Args[ArgIdx];
 
+    // [ReflectionTS]
+    if (getLangOpts().ReflectionTS && getLangOpts().ReflectionExt) {
+      if (Arg->getType()->isMetaobjectIdType()) {
+        Result.Namespaces.insert(lookupReflectionNamespace());
+        continue;
+      }
+    }
     if (Arg->getType() != Context.OverloadTy) {
       addAssociatedClassesAndNamespaces(Result, Arg->getType());
       continue;
