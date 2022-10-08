@@ -3863,7 +3863,7 @@ ExprResult Parser::ParseReflexprExpression(bool idOnly) {
       DeclSpec DS(AttrFactory);
       ParseSpecifierQualifierList(DS);
       // [reflection-ts] FIXME other DC if idOnly?
-      Declarator DeclaratorInfo(DS, DeclaratorContext::TypeName);
+      Declarator DeclaratorInfo(DS, ParsedAttributesView::none(), DeclaratorContext::TypeName);
       ParseDeclarator(DeclaratorInfo);
 
       if (Tok.is(tok::r_paren)) {
